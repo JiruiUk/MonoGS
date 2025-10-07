@@ -62,6 +62,7 @@ class FrontEnd(mp.Process):
         valid_rgb = (gt_img.sum(dim=0) > rgb_boundary_threshold)[None]
         if self.monocular:
             if depth is None:
+                # Generate a initial ranodm depth map
                 initial_depth = 2 * torch.ones(1, gt_img.shape[1], gt_img.shape[2])
                 initial_depth += torch.randn_like(initial_depth) * 0.3
             else:
@@ -211,13 +212,13 @@ class FrontEnd(mp.Process):
         pose_CW = getWorld2View2(curr_frame.R, curr_frame.T)
         last_kf_CW = getWorld2View2(last_kf.R, last_kf.T)
         last_kf_WC = torch.linalg.inv(last_kf_CW)
-        dist = torch.norm((pose_CW @ last_kf_WC)[0:3, 3])
+        dist = torch.norm((pose_CW @ last_kf_WC)[0:3, 3]) # 计算两个相机中心的Eclidian距离
         dist_check = dist > kf_translation * self.median_depth
         dist_check2 = dist > kf_min_translation * self.median_depth
 
         union = torch.logical_or(
             cur_frame_visibility_filter, occ_aware_visibility[last_keyframe_idx]
-        ).count_nonzero()
+        ).count_nonzero() # count the number of True in tensor
         intersection = torch.logical_and(
             cur_frame_visibility_filter, occ_aware_visibility[last_keyframe_idx]
         ).count_nonzero()

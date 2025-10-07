@@ -22,14 +22,16 @@ def image_gradient(image):
 
 
 def image_gradient_mask(image, eps=0.01):
+    # 检测图像边缘
     # Compute image gradient mask
     c = image.shape[0]
-    conv_y = torch.ones((1, 1, 3, 3), dtype=torch.float32, device="cuda")
+    conv_y = torch.ones((1, 1, 3, 3), dtype=torch.float32, device="cuda") # [out_channels, in_channels, H, W]
     conv_x = torch.ones((1, 1, 3, 3), dtype=torch.float32, device="cuda")
-    p_img = torch.nn.functional.pad(image, (1, 1, 1, 1), mode="reflect")[None]
-    p_img = torch.abs(p_img) > eps
+    p_img = torch.nn.functional.pad(image, (1, 1, 1, 1), mode="reflect")[None] # None 代表在最前面增加一个维度，变成[1, C, H, W]
+    p_img = torch.abs(p_img) > eps # [1, C, H, W]，二值化
     img_grad_v = torch.nn.functional.conv2d(
-        p_img.float(), conv_x.repeat(c, 1, 1, 1), groups=c
+        p_img.float(), conv_x.repeat(c, 1, 1, 1) # [C, 1, 3, 3]
+        , groups=c # 每个channel独立卷积
     )
     img_grad_h = torch.nn.functional.conv2d(
         p_img.float(), conv_y.repeat(c, 1, 1, 1), groups=c
