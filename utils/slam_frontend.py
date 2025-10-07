@@ -23,8 +23,16 @@ class FrontEnd(mp.Process):
         self.pipeline_params = None
         self.frontend_queue = None
         self.backend_queue = None
-        self.q_main2vis = None
-        self.q_vis2main = None
+        self.q_main2vis = None # 主进程→可视化进程，
+        self.q_vis2main = None # 可视化进程→主进程，
+
+# ┌─────────────────┐    q_main2vis    ┌─────────────────┐
+# │   SLAM主进程     │ ───────────────> │   可视化进程     │
+# │                 │                  │                 │
+# │ - 相机跟踪       │    q_vis2main    │ - 3D场景显示     │
+# │ - 关键帧决策     │ <─────────────── │ - 用户交互       │
+# │ - 地图管理       │                  │ - 实时监控       │
+# └─────────────────┘                  └─────────────────┘
 
         self.initialized = False
         self.kf_indices = []
@@ -36,7 +44,7 @@ class FrontEnd(mp.Process):
         self.reset = True
         self.requested_init = False
         self.requested_keyframe = 0
-        self.use_every_n_frames = 1
+        self.use_every_n_frames = 1 # 控制帧采样率，即每n帧处理一帧
 
         self.gaussians = None
         self.cameras = dict()
@@ -62,6 +70,7 @@ class FrontEnd(mp.Process):
         valid_rgb = (gt_img.sum(dim=0) > rgb_boundary_threshold)[None]
         if self.monocular:
             if depth is None:
+                # 单目模式下，rasterization深度是唯一的深度来源
                 # Generate a initial ranodm depth map
                 initial_depth = 2 * torch.ones(1, gt_img.shape[1], gt_img.shape[2])
                 initial_depth += torch.randn_like(initial_depth) * 0.3
@@ -127,13 +136,13 @@ class FrontEnd(mp.Process):
         self.reset = False
 
     def tracking(self, cur_frame_idx, viewpoint):
-        prev = self.cameras[cur_frame_idx - self.use_every_n_frames]
-        viewpoint.update_RT(prev.R, prev.T)
+        prev = self.cameras[cur_frame_idx - self.use_every_n_frames] # 上一采样帧
+        viewpoint.update_RT(prev.R, prev.T) # 用采样帧的位姿初始化当前帧位姿
 
         opt_params = []
         opt_params.append(
             {
-                "params": [viewpoint.cam_rot_delta],
+                "params": [viewpoint.cam_rot_delta], # 旋转增量
                 "lr": self.config["Training"]["lr"]["cam_rot_delta"],
                 "name": "rot_{}".format(viewpoint.uid),
             }
@@ -141,20 +150,20 @@ class FrontEnd(mp.Process):
         opt_params.append(
             {
                 "params": [viewpoint.cam_trans_delta],
-                "lr": self.config["Training"]["lr"]["cam_trans_delta"],
+                "lr": self.config["Training"]["lr"]["cam_trans_delta"], #位移增量
                 "name": "trans_{}".format(viewpoint.uid),
             }
         )
         opt_params.append(
             {
-                "params": [viewpoint.exposure_a],
+                "params": [viewpoint.exposure_a], #乘性曝光补偿,控制图像的对比度和亮度缩放
                 "lr": 0.01,
                 "name": "exposure_a_{}".format(viewpoint.uid),
             }
         )
         opt_params.append(
             {
-                "params": [viewpoint.exposure_b],
+                "params": [viewpoint.exposure_b], #加性曝光补偿，偏置,控制图像的亮度偏移
                 "lr": 0.01,
                 "name": "exposure_b_{}".format(viewpoint.uid),
             }
@@ -169,7 +178,7 @@ class FrontEnd(mp.Process):
                 render_pkg["render"],
                 render_pkg["depth"],
                 render_pkg["opacity"],
-            )
+            ) # 渲染结果
             pose_optimizer.zero_grad()
             loss_tracking = get_loss_tracking(
                 self.config, image, depth, opacity, viewpoint
@@ -187,7 +196,8 @@ class FrontEnd(mp.Process):
                         gtcolor=viewpoint.original_image,
                         gtdepth=viewpoint.depth
                         if not self.monocular
-                        else np.zeros((viewpoint.image_height, viewpoint.image_width)),
+                        else np.zeros((viewpoint.image_height, viewpoint.image_width) # monocular情况下，深度图置零
+                        ), # q_main2vis 用于可视化
                     )
                 )
             if converged:
@@ -201,10 +211,15 @@ class FrontEnd(mp.Process):
         cur_frame_idx,
         last_keyframe_idx,
         cur_frame_visibility_filter,
-        occ_aware_visibility,
+        occ_aware_visibility, # 遮挡感知可见性：考虑深度和遮挡关系，表示在当前3D高斯地图下，每个关键帧中哪些像素是真正可见的
     ):
+        # 基于中值深度缩放的主要平移阈值， 物理意义：当相机移动距离超过场景深度的*% 时，强制创建关键帧
         kf_translation = self.config["Training"]["kf_translation"]
-        kf_min_translation = self.config["Training"]["kf_min_translation"]
+
+        #绝对最小平移阈值，物理意义：即使重叠度很低，也必须移动至少场景深度的*% 才创建关键帧
+        kf_min_translation = self.config["Training"]["kf_min_translation"] 
+
+        #两帧之间可见区域的最大允许重叠比例，物理意义：如果当前帧与上一关键帧的共享可见区域少于*%，则创建关键帧
         kf_overlap = self.config["Training"]["kf_overlap"]
 
         curr_frame = self.cameras[cur_frame_idx]
@@ -212,17 +227,17 @@ class FrontEnd(mp.Process):
         pose_CW = getWorld2View2(curr_frame.R, curr_frame.T)
         last_kf_CW = getWorld2View2(last_kf.R, last_kf.T)
         last_kf_WC = torch.linalg.inv(last_kf_CW)
-        dist = torch.norm((pose_CW @ last_kf_WC)[0:3, 3]) # 计算两个相机中心的Eclidian距离
+        dist = torch.norm((pose_CW @ last_kf_WC)[0:3, 3]) # 计算两个相机中心的Eclidian距离, 中间为Translation部分
         dist_check = dist > kf_translation * self.median_depth
         dist_check2 = dist > kf_min_translation * self.median_depth
 
         union = torch.logical_or(
             cur_frame_visibility_filter, occ_aware_visibility[last_keyframe_idx]
-        ).count_nonzero() # count the number of True in tensor
+        ).count_nonzero() # count the number of True in tensor, 上下两帧可见的像素点数量合集
         intersection = torch.logical_and(
             cur_frame_visibility_filter, occ_aware_visibility[last_keyframe_idx]
-        ).count_nonzero()
-        point_ratio_2 = intersection / union
+        ).count_nonzero() #上下两帧都可见的像素点数量合集
+        point_ratio_2 = intersection / union # 重复可见像素点比例
         return (point_ratio_2 < kf_overlap and dist_check2) or dist_check
 
     def add_to_window(
@@ -325,7 +340,7 @@ class FrontEnd(mp.Process):
             cy=self.dataset.cy,
             W=self.dataset.width,
             H=self.dataset.height,
-        ).transpose(0, 1)
+        ).transpose(0, 1) # 设置投影矩阵
         projection_matrix = projection_matrix.to(device=self.device)
         tic = torch.cuda.Event(enable_timing=True)
         toc = torch.cuda.Event(enable_timing=True)
@@ -416,7 +431,7 @@ class FrontEnd(mp.Process):
                 create_kf = self.is_keyframe(
                     cur_frame_idx,
                     last_keyframe_idx,
-                    curr_visibility,
+                    curr_visibility, # 每个像素是否被渲染到
                     self.occ_aware_visibility,
                 )
                 if len(self.current_window) < self.window_size:

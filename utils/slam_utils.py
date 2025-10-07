@@ -56,7 +56,7 @@ def depth_reg(depth, gt_image, huber_eps=0.1, mask=None):
 
 
 def get_loss_tracking(config, image, depth, opacity, viewpoint, initialization=False):
-    image_ab = (torch.exp(viewpoint.exposure_a)) * image + viewpoint.exposure_b
+    image_ab = (torch.exp(viewpoint.exposure_a)) * image + viewpoint.exposure_b # 曝光补偿
     if config["Training"]["monocular"]:
         return get_loss_tracking_rgb(config, image_ab, depth, opacity, viewpoint)
     return get_loss_tracking_rgbd(config, image_ab, depth, opacity, viewpoint)
@@ -67,10 +67,10 @@ def get_loss_tracking_rgb(config, image, depth, opacity, viewpoint):
     _, h, w = gt_image.shape
     mask_shape = (1, h, w)
     rgb_boundary_threshold = config["Training"]["rgb_boundary_threshold"]
-    rgb_pixel_mask = (gt_image.sum(dim=0) > rgb_boundary_threshold).view(*mask_shape)
-    rgb_pixel_mask = rgb_pixel_mask * viewpoint.grad_mask
+    rgb_pixel_mask = (gt_image.sum(dim=0) > rgb_boundary_threshold).view(*mask_shape) #在通道维度求和，得到每个像素的RGB总值 
+    rgb_pixel_mask = rgb_pixel_mask * viewpoint.grad_mask #亮度适中且纹理丰富的区域
     l1 = opacity * torch.abs(image * rgb_pixel_mask - gt_image * rgb_pixel_mask)
-    return l1.mean()
+    return l1.mean() # 对所有误差像素求平均
 
 
 def get_loss_tracking_rgbd(
@@ -131,7 +131,7 @@ def get_loss_mapping_rgbd(config, image, depth, viewpoint, initialization=False)
 
 
 def get_median_depth(depth, opacity=None, mask=None, return_std=False):
-    depth = depth.detach().clone()
+    depth = depth.detach().clone() 
     opacity = opacity.detach()
     valid = depth > 0
     if opacity is not None:
